@@ -2,22 +2,22 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// SQLite-Datenbank registrieren
+// SQLite-Datenbank registrieren (orders.db)
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite("Data Source=orders.db"));
 
 var app = builder.Build();
 
-// Tabelle beim Start anlegen, falls sie noch nicht existiert
+// SQLite-Tabelle beim Start automatisch erzeugen, falls noch nicht vorhanden
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
 }
 
-// -------------------------------------------------------------
-// TEIL 1: Order-Service Endpoints
-// -------------------------------------------------------------
+// =============================================================
+// TEIL 1: Order-Service (Web API)
+// =============================================================
 
 // POST /api/orders: Speichert Bestellung mit Zeitstempel & Status Pending
 app.MapPost("/api/orders", async (CreateOrderRequest request, AppDbContext db) =>
@@ -26,7 +26,7 @@ app.MapPost("/api/orders", async (CreateOrderRequest request, AppDbContext db) =
     {
         CustomerEmail = request.CustomerEmail,
         Item = request.Item,
-        Category = request.Category ?? "Sonstiges",
+        Category = string.IsNullOrWhiteSpace(request.Category) ? "Sonstiges" : request.Category,
         Price = request.Price,
         CreatedAt = DateTime.UtcNow,
         Status = "Pending"
@@ -38,25 +38,26 @@ app.MapPost("/api/orders", async (CreateOrderRequest request, AppDbContext db) =
     return Results.Created($"/api/orders/{order.Id}", order);
 });
 
-// Hilfs-Endpunkt: Alle Bestellungen ansehen
+// GET /api/orders: Alle Bestellungen abrufen
 app.MapGet("/api/orders", async (AppDbContext db) =>
-    await db.Orders.ToListAsync());
+    await db.Orders.AsNoTracking().ToListAsync());
 
-// -------------------------------------------------------------
-// TEIL 2: Analytics-Service Endpoints
-// -------------------------------------------------------------
+// =============================================================
+// TEIL 2: Analytics-Service
+// =============================================================
 
-// GET /api/analytics/total-revenue: Berechnet Summe aller Verkäufe (SUM)
+// GET /api/analytics/total-revenue: Berechnet Summe aller Verkäufe via SUM
 app.MapGet("/api/analytics/total-revenue", async (AppDbContext db) =>
 {
+    // Cast auf (double) stellt sicher, dass SQLite das SUM-Kommando nativ in SQL ausführt
     var total = await db.Orders
         .AsNoTracking()
-        .SumAsync(o => o.Price);
+        .SumAsync(o => (double)o.Price);
 
     return Results.Ok(new { TotalRevenue = total });
 });
 
-// GET /api/analytics/by-category: Gruppiert nach Kategorie & summiert Umsatz (GROUP BY + SUM)
+// GET /api/analytics/by-category: Gruppiert nach Kategorie & summiert Umsatz via GROUP BY und SUM
 app.MapGet("/api/analytics/by-category", async (AppDbContext db) =>
 {
     var stats = await db.Orders
@@ -65,7 +66,7 @@ app.MapGet("/api/analytics/by-category", async (AppDbContext db) =>
         .Select(g => new
         {
             Category = g.Key,
-            TotalRevenue = g.Sum(o => o.Price),
+            TotalRevenue = g.Sum(o => (double)o.Price),
             OrderCount = g.Count()
         })
         .ToListAsync();
@@ -75,9 +76,9 @@ app.MapGet("/api/analytics/by-category", async (AppDbContext db) =>
 
 app.Run();
 
-// -------------------------------------------------------------
+// =============================================================
 // Datenmodell & DbContext
-// -------------------------------------------------------------
+// =============================================================
 
 public class Order
 {
@@ -91,14 +92,15 @@ public class Order
 }
 
 public record CreateOrderRequest(
-    string CustomerEmail, 
-    string Item, 
-    decimal Price, 
+    string CustomerEmail,
+    string Item,
+    decimal Price,
     string? Category
 );
 
 public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
     public DbSet<Order> Orders => Set<Order>();
 }
